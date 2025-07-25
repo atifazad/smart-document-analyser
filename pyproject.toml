@@ -1,8 +1,14 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "smart-document-assistant"
 version = "0.1.0"
 description = "A tool for processing documents using visual and text AI models via Ollama."
-authors = ["Your Name <your.email@example.com>"]
+authors = [
+  { name = "Muhammad Atif", email = "atifazad83@gmail.com" }
+]
 readme = "README.md"
 requires-python = ">=3.9"
 dependencies = [
@@ -16,16 +22,13 @@ dependencies = [
   "pytesseract",
   "Pillow",
   "opencv-python",
-  "python-dotenv"
+  "python-dotenv",
+  "python-multipart",
+  "pytest",
+  "httpx",
+  "black",
+  "ruff"
 ]
 
 [tool.uv]
-# uv-specific settings can go here
-
-[project.optional-dependencies]
-dev = [
-    "pytest",
-    "httpx",
-    "black",
-    "ruff"
-] 
+# uv-specific settings can go here 
