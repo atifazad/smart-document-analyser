@@ -67,10 +67,30 @@ function App() {
     }
   };
 
+  const renderLlavaResult = (llavaResult: any) => {
+    if (!llavaResult) return null;
+    const response = typeof llavaResult === 'object' && llavaResult.response ? llavaResult.response : llavaResult;
+    let duration = 'N/A';
+    if (typeof llavaResult === 'object' && llavaResult.total_duration) {
+      duration = (llavaResult.total_duration / 1_000_000_000).toFixed(2) + 's';
+    }
+    return (
+      <div className="mb-3">
+        <div className="flex items-center gap-3 mb-1">
+          <span className="font-semibold text-blue-700">Analysis</span>
+          <span className="text-xs bg-blue-100 text-blue-800 px-2 py-1 rounded">Processing time: {duration}</span>
+        </div>
+        <div className="text-gray-800 whitespace-pre-wrap text-sm bg-gray-50 p-2 rounded">
+          {response}
+        </div>
+      </div>
+    );
+  };
+
   return (
     <div className="min-h-screen w-screen flex flex-col items-center justify-center bg-gradient-to-br from-gray-50 to-blue-50 relative">
       <div className="flex-1 flex items-center justify-center w-full">
-        <div className="bg-white rounded-2xl shadow-xl p-10 w-full max-w-lg flex flex-col gap-8">
+        <div className="bg-white rounded-2xl shadow-xl p-10 w-full max-w-4xl flex flex-col gap-8">
           <h1 className="text-3xl font-extrabold text-gray-900 text-center">Smart Document Assistant</h1>
           <div
             className={`border-2 border-dashed rounded-xl p-6 flex flex-col items-center justify-center transition-colors duration-200 cursor-pointer ${dragActive ? 'border-blue-500 bg-blue-50' : 'border-gray-300 bg-gray-100 hover:border-blue-400'}`}
@@ -112,26 +132,19 @@ function App() {
             </div>
           )}
           {results && results.length > 0 && (
-            <div className="flex flex-col gap-4 mt-4">
+            <div className="flex flex-col gap-6 mt-4">
               {results.map((res, idx) => (
-                <div key={idx} className="bg-gray-50 border border-gray-200 rounded-xl p-4 shadow-sm">
-                  <div className="font-semibold text-blue-700 mb-1">Image: {res.image}</div>
-                  {res.llava_result ? (
-                    <div>
-                      <div className="text-gray-800 whitespace-pre-wrap text-sm">
-                        {typeof res.llava_result === 'object' && res.llava_result.response ? (
-                          <>
-                            <div><span className="font-semibold">Response:</span> {res.llava_result.response}</div>
-                            {res.llava_result.total_duration && (
-                              <div className="text-xs text-gray-500 mt-1">Processing time: {(res.llava_result.total_duration / 1_000_000_000).toFixed(2)} sec</div>
-                            )}
-                          </>
-                        ) : typeof res.llava_result === 'string' ? res.llava_result : null}
-                      </div>
-                    </div>
-                  ) : res.error ? (
-                    <div className="text-red-600 text-sm">Error: {res.error}</div>
-                  ) : null}
+                <div key={idx} className="bg-gray-50 border border-gray-200 rounded-xl p-6 shadow-sm">
+                  <div className="font-semibold text-blue-700 mb-3 text-lg">
+                    Image: {res.image}
+                    {res.enhanced_image && res.enhanced_image !== res.image && (
+                      <span className="text-sm text-gray-500 ml-2">(Enhanced: {res.enhanced_image})</span>
+                    )}
+                  </div>
+                  {renderLlavaResult(res.llava_result)}
+                  {res.llava_error && (
+                    <div className="mb-2 text-red-700 text-sm">Error: {res.llava_error}</div>
+                  )}
                 </div>
               ))}
             </div>
