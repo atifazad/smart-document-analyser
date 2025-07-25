@@ -13,6 +13,9 @@ readme = "README.md"
 requires-python = ">=3.9"
 dependencies = [
   "langchain",
+  "langchain-community",
+  "langchain-ollama",
+  "faiss-cpu",
   "ollama",
   "fastapi",
   "pydantic",
@@ -27,6 +30,7 @@ dependencies = [
   "python-multipart",
   "pytest",
   "httpx",
+  "requests",
   "black",
   "ruff"
 ]
