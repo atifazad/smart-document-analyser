@@ -8,6 +8,7 @@ function App() {
   const [error, setError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [dragActive, setDragActive] = useState(false);
+  const progressIntervalRef = useRef<number | null>(null);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
@@ -40,12 +41,57 @@ function App() {
     setDragActive(false);
   };
 
+  const startProgressSimulation = () => {
+    setProgress(0);
+    let currentProgress = 0;
+    
+    // Phase 1: Upload (0-30%)
+    const uploadPhase = setInterval(() => {
+      currentProgress += 2;
+      if (currentProgress <= 30) {
+        setProgress(currentProgress);
+      } else {
+        clearInterval(uploadPhase);
+        
+        // Phase 2: Processing (30-90%)
+        const processingPhase = setInterval(() => {
+          currentProgress += 1;
+          if (currentProgress <= 90) {
+            setProgress(currentProgress);
+          } else {
+            clearInterval(processingPhase);
+            
+            // Phase 3: Finalizing (90-100%)
+            const finalizingPhase = setInterval(() => {
+              currentProgress += 0.5;
+              if (currentProgress <= 100) {
+                setProgress(currentProgress);
+              } else {
+                clearInterval(finalizingPhase);
+              }
+            }, 100);
+          }
+        }, 200);
+      }
+    }, 100);
+  };
+
+  const stopProgressSimulation = () => {
+    if (progressIntervalRef.current) {
+      clearInterval(progressIntervalRef.current);
+      progressIntervalRef.current = null;
+    }
+  };
+
   const handleUpload = async () => {
     if (!file) return;
     setUploading(true);
-    setProgress(0);
-    setResults(null);
     setError(null);
+    setResults(null);
+    
+    // Start progress simulation
+    startProgressSimulation();
+    
     try {
       const formData = new FormData();
       formData.append('file', file);
@@ -53,10 +99,12 @@ function App() {
         method: 'POST',
         body: formData,
       });
+      
       if (!response.ok) {
         const err = await response.json();
         throw new Error(err.detail || 'Upload failed');
       }
+      
       const data = await response.json();
       setProgress(100);
       setResults(data.results || []);
@@ -64,6 +112,7 @@ function App() {
       setError(err.message || 'Upload failed');
     } finally {
       setUploading(false);
+      stopProgressSimulation();
     }
   };
 
@@ -77,12 +126,67 @@ function App() {
     return (
       <div className="mb-3">
         <div className="flex items-center gap-3 mb-1">
-          <span className="font-semibold text-blue-700">Analysis</span>
+          <span className="font-semibold text-blue-700">Visual Analysis</span>
           <span className="text-xs bg-blue-100 text-blue-800 px-2 py-1 rounded">Processing time: {duration}</span>
         </div>
         <div className="text-gray-800 whitespace-pre-wrap text-sm bg-gray-50 p-2 rounded">
           {response}
         </div>
+      </div>
+    );
+  };
+
+  const renderTextAnalysis = (textAnalysis: any) => {
+    if (!textAnalysis || textAnalysis.error) return null;
+    
+    return (
+      <div className="space-y-4">
+        {/* Summary */}
+        {textAnalysis.summary && (
+          <div className="bg-green-50 border border-green-200 rounded-lg p-4">
+            <h3 className="font-semibold text-green-800 mb-2">Summary</h3>
+            <div className="text-sm text-green-700 whitespace-pre-wrap">
+              {textAnalysis.summary.summary}
+            </div>
+            <div className="text-xs text-green-600 mt-2">
+              Compression: {textAnalysis.summary.compression_ratio}x
+            </div>
+          </div>
+        )}
+
+        {/* Structured Data */}
+        {textAnalysis.structured_data && !textAnalysis.structured_data.error && (
+          <div className="bg-purple-50 border border-purple-200 rounded-lg p-4">
+            <h3 className="font-semibold text-purple-800 mb-2">Structured Data</h3>
+            <pre className="text-xs text-purple-700 bg-purple-100 p-2 rounded overflow-x-auto">
+              {JSON.stringify(textAnalysis.structured_data, null, 2)}
+            </pre>
+          </div>
+        )}
+
+        {/* Action Items */}
+        {textAnalysis.action_items && !textAnalysis.action_items.error && textAnalysis.action_items.action_items && (
+          <div className="bg-orange-50 border border-orange-200 rounded-lg p-4">
+            <h3 className="font-semibold text-orange-800 mb-2">Action Items</h3>
+            <div className="space-y-2">
+              {textAnalysis.action_items.action_items.map((item: any, idx: number) => (
+                <div key={idx} className="flex items-start gap-2 text-sm">
+                  <span className={`px-2 py-1 rounded text-xs font-medium ${
+                    item.priority === 'high' ? 'bg-red-100 text-red-800' :
+                    item.priority === 'medium' ? 'bg-yellow-100 text-yellow-800' :
+                    'bg-green-100 text-green-800'
+                  }`}>
+                    {item.priority || 'medium'}
+                  </span>
+                  <span className="text-orange-700">{item.action}</span>
+                  {item.assignee && (
+                    <span className="text-xs text-orange-600">→ {item.assignee}</span>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
     );
   };
@@ -119,16 +223,22 @@ function App() {
           <button
             onClick={handleUpload}
             disabled={!file || uploading}
-            className="bg-blue-600 text-white py-2 px-4 rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors"
+            className="bg-blue-600 text-black py-2 px-4 rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors"
           >
-            {uploading ? 'Uploading...' : 'Upload & Process'}
+            {uploading ? 'Processing...' : 'Upload & Process'}
           </button>
           {uploading && (
-            <div className="w-full bg-gray-200 rounded-full h-2.5">
-              <div
-                className="bg-blue-600 h-2.5 rounded-full transition-all duration-300"
-                style={{ width: `${progress}%` }}
-              ></div>
+            <div className="w-full">
+              <div className="flex justify-between text-sm text-gray-600 mb-1">
+                <span>Processing document...</span>
+                <span>{Math.round(progress)}%</span>
+              </div>
+              <div className="w-full bg-gray-200 rounded-full h-2.5">
+                <div
+                  className="bg-blue-600 h-2.5 rounded-full transition-all duration-300 ease-out"
+                  style={{ width: `${progress}%` }}
+                ></div>
+              </div>
             </div>
           )}
           {results && results.length > 0 && (
@@ -144,6 +254,10 @@ function App() {
                   {renderLlavaResult(res.llava_result)}
                   {res.llava_error && (
                     <div className="mb-2 text-red-700 text-sm">Error: {res.llava_error}</div>
+                  )}
+                  {renderTextAnalysis(res.text_analysis)}
+                  {res.ocr_error && (
+                    <div className="mb-2 text-red-700 text-sm">OCR Error: {res.ocr_error}</div>
                   )}
                 </div>
               ))}
