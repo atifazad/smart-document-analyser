@@ -180,8 +180,8 @@ Return a JSON object with the following structure:
 JSON:"""
         )
         
-        chain = LLMChain(llm=self.llm, prompt=prompt_template)
-        result = chain.run(text=text_content)
+        chain = prompt_template | self.llm
+        result = chain.invoke({"text": text_content})
         
         try:
             return json.loads(result.strip())
