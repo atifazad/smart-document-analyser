@@ -3,8 +3,15 @@ from fastapi.responses import JSONResponse
 import os
 import shutil
 from uuid import uuid4
-from app.services.file_service import convert_pdf_to_images, validate_and_standardize_image
-from app.services.llava_service import analyze_image_with_llava, LLaVAServiceError
+from app.services.file_service import (
+    convert_pdf_to_images, 
+    validate_and_standardize_image, 
+    enhance_image_for_handwriting
+)
+from app.services.llava_service import (
+    analyze_image_with_llava,
+    LLaVAServiceError
+)
 
 router = APIRouter()
 
@@ -39,20 +46,28 @@ async def upload_file(file: UploadFile = File(...)):
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Image validation failed: {e}")
 
-    # LLaVA visual analysis for each image
     results = []
     for img_path in image_paths:
+        # Enhance image for better LLaVA processing
         try:
-            llava_result = analyze_image_with_llava(img_path)
-            results.append({
-                "image": os.path.basename(img_path),
-                "llava_result": llava_result
-            })
+            enhanced_img_path = enhance_image_for_handwriting(img_path, PROCESSED_DIR)
+        except Exception:
+            enhanced_img_path = img_path
+
+        # Run LLaVA analysis only
+        llava_result = None
+        llava_error = None
+        try:
+            llava_result = analyze_image_with_llava(enhanced_img_path)
         except LLaVAServiceError as e:
-            results.append({
-                "image": os.path.basename(img_path),
-                "error": str(e)
-            })
+            llava_error = str(e)
+
+        results.append({
+            "image": os.path.basename(img_path),
+            "enhanced_image": os.path.basename(enhanced_img_path) if enhanced_img_path != img_path else None,
+            "llava_result": llava_result,
+            "llava_error": llava_error
+        })
 
     return JSONResponse({
         "filename": safe_name,

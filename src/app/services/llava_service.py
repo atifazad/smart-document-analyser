@@ -9,12 +9,37 @@ LLAVA_MODEL = os.getenv("LLAVA_MODEL", "llava:latest")
 class LLaVAServiceError(Exception):
     pass
 
-def analyze_image_with_llava(image_path: str, prompt: str = "Describe the visual elements and layout.", timeout: int = 60) -> Dict[str, Any]:
-    """
-    Calls Ollama's LLaVA model with the given image and prompt using /api/generate.
-    Returns the parsed response as a dict.
-    Raises LLaVAServiceError on failure.
-    """
+def analyze_image_with_llava(image_path: str, prompt: str = None, timeout: int = 60) -> Dict[str, Any]:
+    if prompt is None:
+        prompt = """Analyze this document comprehensively and provide a structured analysis for downstream processing.
+
+Please provide:
+
+1. **Document Type**: Identify the type (invoice, form, report, notes, receipt, letter, etc.)
+
+2. **Text Content**: Transcribe all readable text from the document, preserving formatting and structure
+
+3. **Key Information**: Extract important details such as:
+   - Dates, names, numbers, amounts
+   - Contact information, addresses
+   - Reference numbers, IDs
+   - Important facts or data points
+
+4. **Structure & Layout**: Describe the document organization:
+   - Headers, sections, paragraphs
+   - Lists, bullet points, numbered items
+   - Columns, rows, formatting
+
+5. **Visual Elements**: Identify and describe:
+   - Tables, charts, graphs
+   - Diagrams, images, logos
+   - Handwriting style (if applicable)
+   - Any visual components
+
+6. **Context & Purpose**: Explain what this document is for and its main topic
+
+Provide a comprehensive, structured response that captures all the above elements for effective downstream processing."""
+    
     url = f"{OLLAMA_HOST}/api/generate"
     try:
         with open(image_path, "rb") as img_file:

@@ -22,6 +22,7 @@ dependencies = [
   "pytesseract",
   "Pillow",
   "opencv-python",
+  "numpy",
   "python-dotenv",
   "python-multipart",
   "pytest",
