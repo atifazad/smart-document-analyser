@@ -1,2 +1,14 @@
+# Ignore Python cache and compiled files
+__pycache__/
+*.pyc
+
+# Ignore environment and config files
+.env
 CURSOR.local.md
 .venv/
+
+# Node and frontend
+frontend/node_modules/
+
+# Ignore macOS system files
+.DS_Store
