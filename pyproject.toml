@@ -1,0 +1,31 @@
+[project]
+name = "smart-document-assistant"
+version = "0.1.0"
+description = "A tool for processing documents using visual and text AI models via Ollama."
+authors = ["Your Name <your.email@example.com>"]
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+  "langchain",
+  "ollama",
+  "fastapi",
+  "pydantic",
+  "uvicorn",
+  "pypdf",
+  "pdf2image",
+  "pytesseract",
+  "Pillow",
+  "opencv-python",
+  "python-dotenv"
+]
+
+[tool.uv]
+# uv-specific settings can go here
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "httpx",
+    "black",
+    "ruff"
+] 
