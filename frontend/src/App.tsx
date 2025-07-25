@@ -4,7 +4,7 @@ function App() {
   const [file, setFile] = useState<File | null>(null);
   const [uploading, setUploading] = useState(false);
   const [progress, setProgress] = useState(0);
-  const [result, setResult] = useState<string | null>(null);
+  const [results, setResults] = useState<any[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [dragActive, setDragActive] = useState(false);
@@ -12,7 +12,7 @@ function App() {
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
       setFile(e.target.files[0]);
-      setResult(null);
+      setResults(null);
       setError(null);
     }
   };
@@ -23,7 +23,7 @@ function App() {
     setDragActive(false);
     if (e.dataTransfer.files && e.dataTransfer.files[0]) {
       setFile(e.dataTransfer.files[0]);
-      setResult(null);
+      setResults(null);
       setError(null);
     }
   };
@@ -44,14 +44,27 @@ function App() {
     if (!file) return;
     setUploading(true);
     setProgress(0);
-    setResult(null);
+    setResults(null);
     setError(null);
-    // TODO: Replace with actual API call
-    setTimeout(() => {
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      const response = await fetch('http://localhost:8000/api/upload', {
+        method: 'POST',
+        body: formData,
+      });
+      if (!response.ok) {
+        const err = await response.json();
+        throw new Error(err.detail || 'Upload failed');
+      }
+      const data = await response.json();
       setProgress(100);
+      setResults(data.results || []);
+    } catch (err: any) {
+      setError(err.message || 'Upload failed');
+    } finally {
       setUploading(false);
-      setResult('Sample result: Document processed successfully.');
-    }, 1500);
+    }
   };
 
   return (
@@ -86,7 +99,7 @@ function App() {
           <button
             onClick={handleUpload}
             disabled={!file || uploading}
-            className="bg-blue-600 text-black py-2 px-4 rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors"
+            className="bg-blue-600 text-white py-2 px-4 rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors"
           >
             {uploading ? 'Uploading...' : 'Upload & Process'}
           </button>
@@ -98,10 +111,29 @@ function App() {
               ></div>
             </div>
           )}
-          {result && (
-            <div className="bg-green-50 border border-green-200 text-green-800 rounded-xl p-4 mt-2">
-              <strong>Result:</strong>
-              <div>{result}</div>
+          {results && results.length > 0 && (
+            <div className="flex flex-col gap-4 mt-4">
+              {results.map((res, idx) => (
+                <div key={idx} className="bg-gray-50 border border-gray-200 rounded-xl p-4 shadow-sm">
+                  <div className="font-semibold text-blue-700 mb-1">Image: {res.image}</div>
+                  {res.llava_result ? (
+                    <div>
+                      <div className="text-gray-800 whitespace-pre-wrap text-sm">
+                        {typeof res.llava_result === 'object' && res.llava_result.response ? (
+                          <>
+                            <div><span className="font-semibold">Response:</span> {res.llava_result.response}</div>
+                            {res.llava_result.total_duration && (
+                              <div className="text-xs text-gray-500 mt-1">Processing time: {(res.llava_result.total_duration / 1_000_000_000).toFixed(2)} sec</div>
+                            )}
+                          </>
+                        ) : typeof res.llava_result === 'string' ? res.llava_result : null}
+                      </div>
+                    </div>
+                  ) : res.error ? (
+                    <div className="text-red-600 text-sm">Error: {res.error}</div>
+                  ) : null}
+                </div>
+              ))}
             </div>
           )}
           {error && (
