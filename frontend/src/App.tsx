@@ -118,15 +118,15 @@ function App() {
     setProcessingComplete(false);
     
     startProgressSimulation();
-    
+
     try {
       const formData = new FormData();
       formData.append('file', file);
-      const response = await fetch('http://localhost:8000/api/upload', {
+      const response = await fetch('http://localhost:8000/api/upload/upload-sync', {
         method: 'POST',
         body: formData,
       });
-      
+
       if (!response.ok) {
         const err = await response.json();
         throw new Error(err.detail || 'Upload failed');
@@ -151,10 +151,10 @@ function App() {
 
   const askQuestion = async (questionText: string, documentId?: string) => {
     if (!selectedDocument || !questionText.trim()) return;
-    
+
     setAskingQuestion(true);
     const questionId = Date.now().toString();
-    
+
     try {
       const response = await fetch('http://localhost:8000/api/analysis/answer-question', {
         method: 'POST',
@@ -167,13 +167,13 @@ function App() {
           document_id: documentId
         }),
       });
-      
+
       if (!response.ok) {
         throw new Error('Failed to get answer');
       }
       
       const data = await response.json();
-      
+    
       const newQuestion: Question = {
         id: questionId,
         text: questionText,
@@ -203,18 +203,58 @@ function App() {
     }
   };
 
-  const renderLlavaResult = (llavaResult: any) => {
-    if (!llavaResult) return null;
-    const response = typeof llavaResult === 'object' && llavaResult.response ? llavaResult.response : llavaResult;
-    let duration = 'N/A';
-    if (typeof llavaResult === 'object' && llavaResult.total_duration) {
-      duration = (llavaResult.total_duration / 1_000_000_000).toFixed(2) + 's';
+  const renderLlavaResult = (llavaResult: any, llavaError?: string) => {
+    if (!llavaResult && !llavaError) return null;
+    
+    // If LLaVA is disabled, show a message
+    if (llavaError && llavaError.includes("disabled")) {
+      return (
+        <div className="mb-3">
+          <div className="flex items-center gap-3 mb-1">
+            <span className="font-semibold text-gray-600">Visual Analysis</span>
+            <span className="text-xs bg-gray-100 text-gray-600 px-2 py-1 rounded">Disabled for Performance</span>
+          </div>
+          <div className="text-gray-500 text-sm bg-gray-50 p-2 rounded">
+            LLaVA visual analysis has been disabled to improve processing speed. 
+            Only OCR text extraction and text analysis are performed.
+          </div>
+        </div>
+      );
     }
+    
+    // Handle the new response format
+    let response = '';
+    let duration = 'N/A';
+    let model = 'Unknown';
+    
+    if (typeof llavaResult === 'object') {
+      if (llavaResult.response) {
+        response = llavaResult.response;
+      } else if (typeof llavaResult === 'string') {
+        response = llavaResult;
+      } else {
+        response = JSON.stringify(llavaResult);
+      }
+      
+      if (llavaResult.processing_time) {
+        duration = llavaResult.processing_time.toFixed(2) + 's';
+      } else if (llavaResult.total_duration) {
+        duration = (llavaResult.total_duration / 1_000_000_000).toFixed(2) + 's';
+      }
+      
+      if (llavaResult.model) {
+        model = llavaResult.model;
+      }
+    } else {
+      response = String(llavaResult);
+    }
+    
     return (
       <div className="mb-3">
         <div className="flex items-center gap-3 mb-1">
           <span className="font-semibold text-blue-700">Visual Analysis</span>
           <span className="text-xs bg-blue-100 text-blue-800 px-2 py-1 rounded">Processing time: {duration}</span>
+          <span className="text-xs bg-blue-100 text-blue-800 px-2 py-1 rounded">Model: {model}</span>
         </div>
         <div className="text-gray-800 whitespace-pre-wrap text-sm bg-gray-50 p-2 rounded">
           {response}
@@ -225,12 +265,8 @@ function App() {
 
   const renderTextAnalysis = (textAnalysis: any) => {
     if (!textAnalysis || textAnalysis.error) {
-      console.log("Text analysis error or missing:", textAnalysis);
       return null;
     }
-    
-    console.log("Rendering text analysis:", textAnalysis);
-    
     return (
       <div className="space-y-4">
         {/* Summary */}
@@ -238,8 +274,8 @@ function App() {
           <div className="bg-green-50 border border-green-200 rounded-lg p-4">
             <h3 className="font-semibold text-green-800 mb-2">Summary</h3>
             <div className="text-sm text-green-700 whitespace-pre-wrap">
-              {typeof textAnalysis.summary === 'string' 
-                ? textAnalysis.summary 
+              {typeof textAnalysis.summary === 'string'
+                ? textAnalysis.summary
                 : textAnalysis.summary.summary || textAnalysis.summary.error || 'No summary available'
               }
             </div>
@@ -285,8 +321,8 @@ function App() {
               </div>
             ) : (
               <div className="text-sm text-orange-700">
-                {typeof textAnalysis.action_items === 'string' 
-                  ? textAnalysis.action_items 
+                {typeof textAnalysis.action_items === 'string'
+                  ? textAnalysis.action_items
                   : textAnalysis.action_items.summary || 'No action items available'
                 }
               </div>
@@ -415,7 +451,7 @@ function App() {
       <div className="flex-1 flex items-center justify-center w-full">
         <div className="bg-white rounded-2xl shadow-xl p-10 w-full max-w-4xl flex flex-col gap-8">
           <h1 className="text-3xl font-extrabold text-gray-900 text-center">Smart Document Assistant</h1>
-          
+
           {/* Tabs */}
           <div className="border-b border-gray-200">
             <nav className="-mb-px flex space-x-8">
@@ -547,10 +583,7 @@ function App() {
                           <span className="text-sm text-gray-500 ml-2">(Enhanced: {res.enhanced_image})</span>
                         )}
                       </div>
-                      {renderLlavaResult(res.llava_result)}
-                      {res.llava_error && (
-                        <div className="mb-2 text-red-700 text-sm">Error: {res.llava_error}</div>
-                      )}
+                      {renderLlavaResult(res.llava_result, res.llava_error)}
                       {renderTextAnalysis(res.text_analysis)}
                       {res.ocr_error && (
                         <div className="mb-2 text-red-700 text-sm">OCR Error: {res.ocr_error}</div>

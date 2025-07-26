@@ -1,87 +1,226 @@
 import os
 import json
-from typing import Dict, Any, List, Optional
+import logging
+from typing import Dict, Any, List
+from langchain_ollama import OllamaLLM, OllamaEmbeddings
 from langchain.prompts import PromptTemplate
-from langchain.schema import Document
+from langchain.schema import HumanMessage, SystemMessage
+from app.services.model_manager import model_manager
+import math
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_community.vectorstores import FAISS
-from .vector_store_service import vector_store_service
-from .model_manager import model_manager
 
-OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
-TEXT_MODEL = os.getenv("TEXT_MODEL", "mistral:7b-instruct")
+logger = logging.getLogger(__name__)
 
 class TextAnalysisServiceError(Exception):
+    """Custom exception for text analysis service errors"""
     pass
 
 class TextAnalysisService:
     def __init__(self):
-        # Use shared model instances from model manager
         self.llm = model_manager.llm
         self.embeddings = model_manager.embeddings
         self.text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=1000,
+            chunk_size=1500,
             chunk_overlap=200
         )
-    
-    def analyze_content_unified(self, text_content: str, document_type: str = "general") -> Dict[str, Any]:
-        """Unified analysis that combines summary, structured data, and action items in one LLM call"""
-        try:
-            prompt_template = PromptTemplate(
-                input_variables=["text", "document_type"],
-                template="""Analyze this {document_type} document and provide a unified response in JSON format:
+        
+        # Restored comprehensive summary prompt
+        self.summary_prompt = PromptTemplate(
+            input_variables=["text"],
+            template="""Summarize the following document content in a clear and comprehensive manner:
 
 {text}
 
-Return a JSON object with this exact structure:
+Provide a summary that includes:
+1. Main topic or purpose of the document
+2. Key points and important information
+3. Important dates, names, or numbers
+
+Summary:"""
+        )
+        
+        self.unified_prompt = PromptTemplate(
+            input_variables=["text", "document_type"],
+            template="""Analyze this {document_type} document and provide a comprehensive JSON response with:
+1. Summary (detailed summary with key points and important details)
+2. Key structured data (dates, amounts, names, entities, etc.)
+3. Action items (if any)
+
+Text: {text}
+
+Respond in this JSON format only:
 {{
-    "summary": {{
-        "summary": "brief summary of the document",
-        "original_length": {len(text_content)},
-        "summary_length": "length of summary"
-    }},
-    "structured_data": {{
-        "document_type": "type of document",
-        "key_information": {{
-            "dates": ["important dates"],
-            "names": ["important names"],
-            "amounts": ["important amounts"],
-            "entities": ["important entities"]
-        }},
-        "extracted_data": "relevant structured data based on document type"
-    }},
-    "action_items": {{
-        "action_items": [
-            {{
-                "action": "description of action",
-                "priority": "high/medium/low",
-                "assignee": "who should do this",
-                "due_date": "when this should be done",
-                "category": "work/personal/financial/etc"
-            }}
-        ],
-        "summary": "brief summary of what needs to be done"
+  "summary": {{
+    "summary": "comprehensive summary with key details",
+    "original_length": "length of original text",
+    "summary_length": "length of summary"
+  }},
+  "structured_data": {{"key": "value"}},
+  "action_items": ["action1", "action2"]
+}}"""
+        )
+        
+        self.action_items_prompt = PromptTemplate(
+            input_variables=["text"],
+            template="""Analyze this document and generate actionable items:
+
+{text}
+
+Generate a list of action items in JSON format:
+{{
+  "action_items": [
+    {{
+      "action": "description of the action",
+      "priority": "high/medium/low",
+      "assignee": "who should do this (if mentioned)",
+      "due_date": "when this should be done (if mentioned)",
+      "category": "work/personal/financial/etc"
     }}
+  ],
+  "summary": "brief summary of what needs to be done"
 }}
 
 JSON:"""
-            )
+        )
+
+    def chunk_text(self, text: str, chunk_size: int = 1500, chunk_overlap: int = 200) -> list:
+        """Split text into overlapping chunks for summarization"""
+        splits = self.text_splitter.split_text(text)
+        return splits
+
+    def summarize_document(self, text_content: str) -> Dict[str, Any]:
+        """Recursively summarize a long document for best context coverage"""
+        # If short, use direct summary
+        if len(text_content) <= 3000:
+            return self.summarize_content(text_content)
+        # Otherwise, chunk and summarize recursively
+        chunks = self.chunk_text(text_content)
+        chunk_summaries = []
+        for chunk in chunks:
+            summary = self.summarize_content(chunk)
+            chunk_summaries.append(summary["summary"] if isinstance(summary, dict) else summary)
+        # Aggregate summaries
+        combined = "\n".join(chunk_summaries)
+        # If still too long, summarize again recursively
+        if len(combined) > 3000:
+            return self.summarize_document(combined)
+        return {
+            "summary": combined,
+            "original_length": len(text_content),
+            "summary_length": len(combined),
+            "recursive": True,
+            "chunks": len(chunks)
+        }
+
+    def summarize_content(self, text_content: str) -> Dict[str, Any]:
+        """Generate a comprehensive summary of the content"""
+        try:
+            prompt = self.summary_prompt.format(text=text_content[:3000])  # Increased for better context
+            result = self.llm.invoke(prompt)
             
-            # Use newer LangChain pattern
-            chain = prompt_template | self.llm
-            result = chain.invoke({"text": text_content, "document_type": document_type})
+            return {
+                "summary": result.strip(),
+                "original_length": len(text_content),
+                "summary_length": len(result.strip())
+            }
+        except Exception as e:
+            logger.error(f"Summarization failed: {e}")
+            return {"error": str(e)}
+
+    def extract_structured_data(self, text_content: str, document_type: str = "general") -> Dict[str, Any]:
+        """Extract structured data based on document type"""
+        try:
+            if document_type == "invoice":
+                prompt = f"""Extract key invoice data from: {text_content[:1000]}
+Return as JSON: {{"amount": "value", "date": "value", "vendor": "value"}}"""
+            elif document_type == "form":
+                prompt = f"""Extract form fields from: {text_content[:1000]}
+Return as JSON: {{"fields": [{{"name": "value"}}]}}"""
+            elif document_type == "meeting":
+                prompt = f"""Extract meeting details from: {text_content[:1000]}
+Return as JSON: {{"date": "value", "participants": ["name"], "decisions": ["decision"]}}"""
+            else:
+                prompt = f"""Extract key information from: {text_content[:1000]}
+Return as JSON: {{"key_info": "value"}}"""
+            
+            result = self.llm.invoke(prompt)
             
             try:
-                # Parse the JSON response
+                # Try to parse JSON response
+                parsed_data = json.loads(result.strip())
+                return {"extracted_data": parsed_data}
+            except json.JSONDecodeError:
+                # If JSON parsing fails, return as text
+                return {"summary": result.strip()}
+                
+        except Exception as e:
+            logger.error(f"Structured data extraction failed: {e}")
+            return {"error": str(e)}
+
+    def generate_action_items(self, text_content: str) -> Dict[str, Any]:
+        """Generate action items from the content"""
+        try:
+            prompt = self.action_items_prompt.format(text=text_content[:1000])  # Reduced for speed
+            result = self.llm.invoke(prompt)
+            
+            try:
+                # Try to parse JSON response
                 parsed_result = json.loads(result.strip())
                 return parsed_result
             except json.JSONDecodeError:
-                # Fallback to individual operations if unified fails
-                return self._fallback_individual_analysis(text_content, document_type)
+                # If JSON parsing fails, parse action items manually
+                action_items = [item.strip() for item in result.split('\n') if item.strip()]
+                return {
+                    "action_items": action_items,
+                    "count": len(action_items)
+                }
         except Exception as e:
-            # If unified analysis fails completely, use fallback
+            logger.error(f"Action items generation failed: {e}")
+            return {"error": str(e)}
+
+    def answer_question(self, text_content: str, question: str, document_id: str = None) -> Dict[str, Any]:
+        """Answer a specific question about the document"""
+        try:
+            prompt = f"""Based on this text, answer the question.
+
+Text: {text_content[:1500]}
+
+Question: {question}
+
+Answer:"""
+            
+            result = self.llm.invoke(prompt)
+            
+            return {
+                "answer": result.strip(),
+                "question": question,
+                "document_id": document_id
+            }
+        except Exception as e:
+            logger.error(f"Question answering failed: {e}")
+            return {"error": str(e)}
+
+    def analyze_content_unified(self, text_content: str, document_type: str = "general") -> Dict[str, Any]:
+        """Unified analysis that combines summary, structured data, and action items in one LLM call"""
+        try:
+            # Use recursive summarization for long docs
+            if len(text_content) > 3000:
+                summary_result = self.summarize_document(text_content)
+            else:
+                summary_result = self.summarize_content(text_content)
+            # Use shorter text for structured data/action items for speed
+            limited_text = text_content[:1000] if len(text_content) > 1000 else text_content
+            structured_data = self.extract_structured_data(limited_text, document_type)
+            action_items = self.generate_action_items(limited_text)
+            return {
+                "summary": summary_result,
+                "structured_data": structured_data,
+                "action_items": action_items
+            }
+        except Exception as e:
+            logger.error(f"Unified analysis failed: {e}")
             return self._fallback_individual_analysis(text_content, document_type)
-    
+
     def _fallback_individual_analysis(self, text_content: str, document_type: str) -> Dict[str, Any]:
         """Fallback to individual analysis methods if unified analysis fails"""
         try:
@@ -95,291 +234,12 @@ JSON:"""
                 "action_items": action_items
             }
         except Exception as e:
-            # If even fallback fails, return error structure
+            logger.error(f"Fallback analysis failed: {e}")
             return {
-                "summary": {"error": f"Summarization failed: {e}"},
-                "structured_data": {"error": f"Structured data extraction failed: {e}"},
-                "action_items": {"error": f"Action item generation failed: {e}"}
+                "summary": {"error": f"Analysis failed: {e}"},
+                "structured_data": {"error": f"Analysis failed: {e}"},
+                "action_items": {"error": f"Analysis failed: {e}"}
             }
-    
-    def summarize_content(self, text_content: str) -> Dict[str, Any]:
-        """Summarize the extracted text content"""
-        try:
-            prompt_template = PromptTemplate(
-                input_variables=["text"],
-                template="""Summarize the following document content in a clear and concise manner:
-
-{text}
-
-Provide a summary that includes:
-1. Main topic or purpose of the document
-2. Key points and important information
-3. Any action items or next steps mentioned
-4. Important dates, names, or numbers
-
-Summary:"""
-            )
-            
-            # Use newer LangChain pattern
-            chain = prompt_template | self.llm
-            result = chain.invoke({"text": text_content})
-            
-            return {
-                "summary": result.strip(),
-                "original_length": len(text_content),
-                "summary_length": len(result)
-            }
-        except Exception as e:
-            raise TextAnalysisServiceError(f"Summarization failed: {e}")
-    
-    def extract_structured_data(self, text_content: str, document_type: str) -> Dict[str, Any]:
-        """Extract structured data based on document type"""
-        try:
-            if document_type.lower() in ["invoice", "receipt"]:
-                return self._extract_financial_data(text_content)
-            elif document_type.lower() in ["form", "application"]:
-                return self._extract_form_fields(text_content)
-            elif document_type.lower() in ["meeting", "notes", "report"]:
-                return self._extract_meeting_data(text_content)
-            else:
-                return self._extract_general_data(text_content)
-        except Exception as e:
-            raise TextAnalysisServiceError(f"Structured data extraction failed: {e}")
-    
-    def _extract_financial_data(self, text_content: str) -> Dict[str, Any]:
-        """Extract financial data from invoices/receipts"""
-        prompt_template = PromptTemplate(
-            input_variables=["text"],
-            template="""Extract financial information from this document and return it as JSON:
-
-{text}
-
-Return a JSON object with the following structure:
-{{
-    "total_amount": "amount in currency",
-    "currency": "currency code",
-    "date": "date in YYYY-MM-DD format",
-    "vendor": "vendor/company name",
-    "items": [
-        {{
-            "description": "item description",
-            "quantity": "quantity",
-            "price": "price per item",
-            "total": "total for this item"
-        }}
-    ],
-    "tax_amount": "tax amount if present",
-    "reference_number": "invoice/receipt number",
-    "payment_method": "payment method if mentioned"
-}}
-
-JSON:"""
-        )
-        
-        # Use newer LangChain pattern
-        chain = prompt_template | self.llm
-        result = chain.invoke({"text": text_content})
-        
-        try:
-            return json.loads(result.strip())
-        except json.JSONDecodeError:
-            return {"error": "Failed to parse JSON response", "raw_response": result}
-    
-    def _extract_form_fields(self, text_content: str) -> Dict[str, Any]:
-        """Extract form fields and their values"""
-        prompt_template = PromptTemplate(
-            input_variables=["text"],
-            template="""Extract form fields and their values from this document and return as JSON:
-
-{text}
-
-Return a JSON object with the following structure:
-{{
-    "form_type": "type of form",
-    "fields": [
-        {{
-            "field_name": "name of the field",
-            "field_value": "value entered in the field",
-            "field_type": "text, date, number, checkbox, etc."
-        }}
-    ],
-    "required_fields": ["list of required field names"],
-    "optional_fields": ["list of optional field names"]
-}}
-
-JSON:"""
-        )
-        
-        # Use newer LangChain pattern
-        chain = prompt_template | self.llm
-        result = chain.invoke({"text": text_content})
-        
-        try:
-            return json.loads(result.strip())
-        except json.JSONDecodeError:
-            return {"error": "Failed to parse JSON response", "raw_response": result}
-    
-    def _extract_meeting_data(self, text_content: str) -> Dict[str, Any]:
-        """Extract meeting information and action items"""
-        prompt_template = PromptTemplate(
-            input_variables=["text"],
-            template="""Extract meeting information and action items from this document and return as JSON:
-
-{text}
-
-Return a JSON object with the following structure:
-{{
-    "meeting_title": "title of the meeting",
-    "date": "meeting date",
-    "participants": ["list of participants"],
-    "agenda_items": [
-        {{
-            "topic": "agenda topic",
-            "discussion": "summary of discussion",
-            "decisions": ["list of decisions made"]
-        }}
-    ],
-    "action_items": [
-        {{
-            "task": "action item description",
-            "assignee": "person responsible",
-            "due_date": "due date if mentioned",
-            "priority": "high/medium/low"
-        }}
-    ],
-    "next_meeting": "date of next meeting if mentioned"
-}}
-
-JSON:"""
-        )
-        
-        chain = prompt_template | self.llm
-        result = chain.invoke({"text": text_content})
-        
-        try:
-            return json.loads(result.strip())
-        except json.JSONDecodeError:
-            return {"error": "Failed to parse JSON response", "raw_response": result}
-    
-    def _extract_general_data(self, text_content: str) -> Dict[str, Any]:
-        """Extract general information from any document"""
-        prompt_template = PromptTemplate(
-            input_variables=["text"],
-            template="""Extract key information from this document and return as JSON:
-
-{text}
-
-Return a JSON object with the following structure:
-{{
-    "document_type": "type of document",
-    "title": "document title",
-    "author": "author if mentioned",
-    "date": "document date",
-    "key_entities": ["important people, places, organizations"],
-    "key_dates": ["important dates mentioned"],
-    "key_numbers": ["important numbers, amounts, quantities"],
-    "main_topics": ["main topics discussed"],
-    "key_points": ["key points or findings"]
-}}
-
-JSON:"""
-        )
-        
-        # Use newer LangChain pattern
-        chain = prompt_template | self.llm
-        result = chain.invoke({"text": text_content})
-        
-        try:
-            return json.loads(result.strip())
-        except json.JSONDecodeError:
-            return {"error": "Failed to parse JSON response", "raw_response": result}
-    
-    def _get_context_from_text(self, text_content: str, question: str) -> str:
-        """Helper method to get context from text using in-memory vector store"""
-        docs = [Document(page_content=text_content)]
-        splits = self.text_splitter.split_documents(docs)
-        vectorstore = FAISS.from_documents(splits, self.embeddings)
-        relevant_docs = vectorstore.similarity_search(question, k=3)
-        return "\n".join([doc.page_content for doc in relevant_docs])
-    
-    def answer_question(self, text_content: str, question: str, document_id: str = None) -> Dict[str, Any]:
-        """Answer questions about the document content"""
-        try:
-            # If document_id is provided, try to use stored vector store
-            if document_id:
-                relevant_docs = vector_store_service.search_similar(document_id, question, k=3)
-                if relevant_docs:
-                    context = "\n".join([doc.page_content for doc in relevant_docs])
-                else:
-                    # Fallback to in-memory processing
-                    context = self._get_context_from_text(text_content, question)
-            else:
-                # Use in-memory processing
-                context = self._get_context_from_text(text_content, question)
-            
-            prompt_template = PromptTemplate(
-                input_variables=["context", "question"],
-                template="""Answer the question based on the following document context:
-
-Context:
-{context}
-
-Question: {question}
-
-Answer the question accurately using only the information provided in the context. If the answer cannot be found in the context, say so.
-
-Answer:"""
-            )
-            
-            # Use newer LangChain pattern
-            chain = prompt_template | self.llm
-            result = chain.invoke({"context": context, "question": question})
-            
-            return {
-                "question": question,
-                "answer": result.strip(),
-                "context_used": len(context),
-                "vector_store_used": document_id is not None and bool(relevant_docs)
-            }
-        except Exception as e:
-            raise TextAnalysisServiceError(f"Question answering failed: {e}")
-    
-    def generate_action_items(self, text_content: str) -> Dict[str, Any]:
-        """Generate action items from document content"""
-        try:
-            prompt_template = PromptTemplate(
-                input_variables=["text"],
-                template="""Analyze this document and generate actionable items:
-
-{text}
-
-Generate a list of action items in JSON format:
-{{
-    "action_items": [
-        {{
-            "action": "description of the action",
-            "priority": "high/medium/low",
-            "assignee": "who should do this (if mentioned)",
-            "due_date": "when this should be done (if mentioned)",
-            "category": "work/personal/financial/etc"
-        }}
-    ],
-    "summary": "brief summary of what needs to be done"
-}}
-
-JSON:"""
-            )
-            
-            # Use newer LangChain pattern
-            chain = prompt_template | self.llm
-            result = chain.invoke({"text": text_content})
-            
-            try:
-                return json.loads(result.strip())
-            except json.JSONDecodeError:
-                return {"error": "Failed to parse JSON response", "raw_response": result}
-        except Exception as e:
-            raise TextAnalysisServiceError(f"Action item generation failed: {e}")
 
 # Global instance
 text_analysis_service = TextAnalysisService() 

@@ -1,4 +1,4 @@
-from fastapi import APIRouter, UploadFile, File, HTTPException, status
+from fastapi import APIRouter, UploadFile, File, HTTPException, status, BackgroundTasks
 from fastapi.responses import JSONResponse
 import os
 import shutil
@@ -17,6 +17,8 @@ from app.services.llava_service import (
 )
 from app.services.text_analysis_service import text_analysis_service, TextAnalysisServiceError
 from app.services.vector_store_service import vector_store_service
+from app.services.processing_pipeline import processing_pipeline
+from app.services.progress_service import progress_tracker
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -29,8 +31,200 @@ PROCESSED_DIR = "/tmp/sda_processed"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(PROCESSED_DIR, exist_ok=True)
 
-@router.post("/upload", status_code=201)
-async def upload_file(file: UploadFile = File(...)):
+async def process_document_background(job_id: str, image_paths: list, filename: str):
+    """Background task for processing documents with progress tracking"""
+    try:
+        logger.info(f"Starting background processing for job {job_id}")
+        
+        # Process pages concurrently
+        results = await processing_pipeline.process_pages_concurrently(image_paths)
+        
+        # Update progress for each completed page
+        for i, result in enumerate(results):
+            progress_tracker.update_page_progress(job_id, i, result)
+        
+        # Create batch vector store for entire document
+        if len(results) > 1:
+            # For multi-page documents, create a single vector store
+            document_id = f"{os.path.splitext(filename)[0]}_{uuid4().hex[:8]}"
+            vector_store_created = await processing_pipeline.create_batch_vector_store(results, document_id)
+            logger.info(f"Batch vector store creation: {'success' if vector_store_created else 'failed'}")
+        else:
+            # For single page, use the existing vector store creation
+            vector_store_created = True
+            for result in results:
+                if result.get("document_id"):
+                    vector_store_created = vector_store_service.create_vector_store(
+                        result["document_id"], 
+                        result.get("ocr_text", "")
+                    )
+        
+        # Prepare final response
+        final_results = []
+        for result in results:
+            # Remove page_index from final response
+            final_result = {
+                "image": result["image"],
+                "enhanced_image": result.get("enhanced_image"),
+                "llava_result": result.get("llava_result"),
+                "llava_error": result.get("llava_error"),
+                "ocr_text": result.get("ocr_text", ""),
+                "ocr_error": result.get("ocr_error"),
+                "text_analysis": result.get("text_analysis", {}),
+                "error": result.get("error")
+            }
+            final_results.append(final_result)
+        
+        # Mark job as completed
+        progress_tracker.complete_job(job_id, final_results)
+        logger.info(f"Completed background processing for job {job_id}")
+        
+    except Exception as e:
+        logger.error(f"Background processing failed for job {job_id}: {e}")
+        progress_tracker.fail_job(job_id, str(e))
+
+@router.post("/upload", status_code=202)
+async def upload_file(background_tasks: BackgroundTasks, file: UploadFile = File(...)):
+    """Upload and process document with background processing and progress tracking"""
+    allowed_types = ["application/pdf", "image/png", "image/jpeg", "image/jpg", "image/webp"]
+    if file.content_type not in allowed_types:
+        raise HTTPException(status_code=400, detail="Unsupported file type.")
+    
+    ext = os.path.splitext(file.filename)[-1]
+    safe_name = f"{uuid4().hex}{ext}"
+    dest_path = os.path.join(UPLOAD_DIR, safe_name)
+    
+    with open(dest_path, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
+
+    image_paths = []
+    # If PDF, convert to images
+    if file.content_type == "application/pdf":
+        try:
+            image_paths = convert_pdf_to_images(dest_path, PROCESSED_DIR)
+            logger.info(f"Converted PDF to {len(image_paths)} images")
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"PDF conversion failed: {e}")
+    else:
+        # Validate and standardize image
+        try:
+            std_img = validate_and_standardize_image(dest_path, PROCESSED_DIR)
+            image_paths = [std_img]
+            logger.info("Processed single image")
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Image validation failed: {e}")
+
+    # Create progress tracking job
+    job_id = progress_tracker.create_job(len(image_paths), safe_name)
+    
+    # Start background processing
+    background_tasks.add_task(
+        process_document_background, 
+        job_id, 
+        image_paths, 
+        safe_name
+    )
+    
+    return JSONResponse({
+        "message": "Document uploaded and processing started",
+        "job_id": job_id,
+        "filename": safe_name,
+        "content_type": file.content_type,
+        "total_pages": len(image_paths),
+        "status": "processing",
+        "progress_url": f"/api/jobs/{job_id}"
+    }, status_code=202)
+
+@router.post("/upload-sync", status_code=201)
+async def upload_file_sync(file: UploadFile = File(...)):
+    """Synchronous upload endpoint for immediate processing (legacy compatibility)"""
+    allowed_types = ["application/pdf", "image/png", "image/jpeg", "image/jpg", "image/webp"]
+    if file.content_type not in allowed_types:
+        raise HTTPException(status_code=400, detail="Unsupported file type.")
+    
+    ext = os.path.splitext(file.filename)[-1]
+    safe_name = f"{uuid4().hex}{ext}"
+    dest_path = os.path.join(UPLOAD_DIR, safe_name)
+    
+    with open(dest_path, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
+
+    image_paths = []
+    # If PDF, convert to images
+    if file.content_type == "application/pdf":
+        try:
+            image_paths = convert_pdf_to_images(dest_path, PROCESSED_DIR)
+            logger.info(f"Converted PDF to {len(image_paths)} images")
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"PDF conversion failed: {e}")
+    else:
+        # Validate and standardize image
+        try:
+            std_img = validate_and_standardize_image(dest_path, PROCESSED_DIR)
+            image_paths = [std_img]
+            logger.info("Processed single image")
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Image validation failed: {e}")
+
+    # Use async processing pipeline for concurrent page processing
+    try:
+        logger.info(f"Starting concurrent processing of {len(image_paths)} pages")
+        results = await processing_pipeline.process_pages_concurrently(image_paths)
+        
+        # Create batch vector store for entire document
+        if len(results) > 1:
+            # For multi-page documents, create a single vector store
+            document_id = f"{os.path.splitext(safe_name)[0]}_{uuid4().hex[:8]}"
+            vector_store_created = await processing_pipeline.create_batch_vector_store(results, document_id)
+            logger.info(f"Batch vector store creation: {'success' if vector_store_created else 'failed'}")
+        else:
+            # For single page, use the existing vector store creation
+            vector_store_created = True
+            for result in results:
+                if result.get("document_id"):
+                    vector_store_created = vector_store_service.create_vector_store(
+                        result["document_id"], 
+                        result.get("ocr_text", "")
+                    )
+        
+        # Prepare final response
+        final_results = []
+        for result in results:
+            # Remove page_index from final response
+            final_result = {
+                "image": result["image"],
+                "enhanced_image": result.get("enhanced_image"),
+                "llava_result": result.get("llava_result"),
+                "llava_error": result.get("llava_error"),
+                "ocr_text": result.get("ocr_text", ""),
+                "ocr_error": result.get("ocr_error"),
+                "text_analysis": result.get("text_analysis", {}),
+                "error": result.get("error")
+            }
+            final_results.append(final_result)
+
+        logger.info(f"Completed processing {len(final_results)} pages")
+        
+        return JSONResponse({
+            "filename": safe_name,
+            "content_type": file.content_type,
+            "status": "uploaded",
+            "results": final_results,
+            "processing_info": {
+                "total_pages": len(image_paths),
+                "processed_pages": len(final_results),
+                "concurrent_processing": True,
+                "batch_vector_store": len(image_paths) > 1
+            }
+        })
+        
+    except Exception as e:
+        logger.error(f"Processing pipeline failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Processing failed: {e}")
+
+@router.post("/upload-legacy", status_code=201)
+async def upload_file_legacy(file: UploadFile = File(...)):
+    """Legacy sequential processing endpoint for comparison"""
     allowed_types = ["application/pdf", "image/png", "image/jpeg", "image/jpg", "image/webp"]
     if file.content_type not in allowed_types:
         raise HTTPException(status_code=400, detail="Unsupported file type.")
@@ -159,5 +353,11 @@ async def upload_file(file: UploadFile = File(...)):
         "filename": safe_name,
         "content_type": file.content_type,
         "status": "uploaded",
-        "results": results
+        "results": results,
+        "processing_info": {
+            "total_pages": len(image_paths),
+            "processed_pages": len(results),
+            "concurrent_processing": False,
+            "batch_vector_store": False
+        }
     })
