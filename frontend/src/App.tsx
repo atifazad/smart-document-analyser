@@ -224,7 +224,12 @@ function App() {
   };
 
   const renderTextAnalysis = (textAnalysis: any) => {
-    if (!textAnalysis || textAnalysis.error) return null;
+    if (!textAnalysis || textAnalysis.error) {
+      console.log("Text analysis error or missing:", textAnalysis);
+      return null;
+    }
+    
+    console.log("Rendering text analysis:", textAnalysis);
     
     return (
       <div className="space-y-4">
@@ -233,11 +238,16 @@ function App() {
           <div className="bg-green-50 border border-green-200 rounded-lg p-4">
             <h3 className="font-semibold text-green-800 mb-2">Summary</h3>
             <div className="text-sm text-green-700 whitespace-pre-wrap">
-              {textAnalysis.summary.summary}
+              {typeof textAnalysis.summary === 'string' 
+                ? textAnalysis.summary 
+                : textAnalysis.summary.summary || textAnalysis.summary.error || 'No summary available'
+              }
             </div>
-            <div className="text-xs text-green-600 mt-2">
-              Compression: {textAnalysis.summary.compression_ratio}x
-            </div>
+            {textAnalysis.summary.original_length && textAnalysis.summary.summary_length && (
+              <div className="text-xs text-green-600 mt-2">
+                Compression: {Math.round(textAnalysis.summary.summary_length / textAnalysis.summary.original_length * 100) / 100}x
+              </div>
+            )}
           </div>
         )}
 
@@ -252,25 +262,47 @@ function App() {
         )}
 
         {/* Action Items */}
-        {textAnalysis.action_items && !textAnalysis.action_items.error && textAnalysis.action_items.action_items && (
+        {textAnalysis.action_items && !textAnalysis.action_items.error && (
           <div className="bg-orange-50 border border-orange-200 rounded-lg p-4">
             <h3 className="font-semibold text-orange-800 mb-2">Action Items</h3>
-            <div className="space-y-2">
-              {textAnalysis.action_items.action_items.map((item: any, idx: number) => (
-                <div key={idx} className="flex items-start gap-2 text-sm">
-                  <span className={`px-2 py-1 rounded text-xs font-medium ${
-                    item.priority === 'high' ? 'bg-red-100 text-red-800' :
-                    item.priority === 'medium' ? 'bg-yellow-100 text-yellow-800' :
-                    'bg-green-100 text-green-800'
-                  }`}>
-                    {item.priority || 'medium'}
-                  </span>
-                  <span className="text-orange-700">{item.action}</span>
-                  {item.assignee && (
-                    <span className="text-xs text-orange-600">→ {item.assignee}</span>
-                  )}
-                </div>
-              ))}
+            {textAnalysis.action_items.action_items && Array.isArray(textAnalysis.action_items.action_items) ? (
+              <div className="space-y-2">
+                {textAnalysis.action_items.action_items.map((item: any, idx: number) => (
+                  <div key={idx} className="flex items-start gap-2 text-sm">
+                    <span className={`px-2 py-1 rounded text-xs font-medium ${
+                      item.priority === 'high' ? 'bg-red-100 text-red-800' :
+                      item.priority === 'medium' ? 'bg-yellow-100 text-yellow-800' :
+                      'bg-green-100 text-green-800'
+                    }`}>
+                      {item.priority || 'medium'}
+                    </span>
+                    <span className="text-orange-700">{item.action}</span>
+                    {item.assignee && (
+                      <span className="text-xs text-orange-600">→ {item.assignee}</span>
+                    )}
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="text-sm text-orange-700">
+                {typeof textAnalysis.action_items === 'string' 
+                  ? textAnalysis.action_items 
+                  : textAnalysis.action_items.summary || 'No action items available'
+                }
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Debug Information */}
+        {textAnalysis && (
+          <div className="bg-gray-50 border border-gray-200 rounded-lg p-4">
+            <h3 className="font-semibold text-gray-800 mb-2">Debug Info</h3>
+            <div className="text-xs text-gray-600">
+              <div>Has Summary: {textAnalysis.summary ? 'Yes' : 'No'}</div>
+              <div>Has Structured Data: {textAnalysis.structured_data ? 'Yes' : 'No'}</div>
+              <div>Has Action Items: {textAnalysis.action_items ? 'Yes' : 'No'}</div>
+              <div>Document Type: {textAnalysis.document_type || 'Unknown'}</div>
             </div>
           </div>
         )}
