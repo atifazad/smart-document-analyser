@@ -17,6 +17,29 @@ class QuestionRequest(BaseModel):
 class ActionItemsRequest(BaseModel):
     text_content: str
 
+@router.post("/test-unified")
+async def test_unified_analysis(request: AnalysisRequest):
+    """Test the unified analysis method"""
+    try:
+        result = text_analysis_service.analyze_content_unified(
+            request.text_content, 
+            request.document_type or "general"
+        )
+        return JSONResponse({
+            "success": True,
+            "result": result,
+            "components": {
+                "has_summary": "summary" in result,
+                "has_structured_data": "structured_data" in result,
+                "has_action_items": "action_items" in result
+            }
+        })
+    except Exception as e:
+        return JSONResponse({
+            "success": False,
+            "error": str(e)
+        })
+
 @router.post("/summarize")
 async def summarize_document(request: AnalysisRequest):
     """Summarize document content"""

@@ -2,6 +2,7 @@ from fastapi import APIRouter, UploadFile, File, HTTPException, status
 from fastapi.responses import JSONResponse
 import os
 import shutil
+import logging
 from uuid import uuid4
 from app.services.file_service import (
     convert_pdf_to_images, 
@@ -11,10 +12,15 @@ from app.services.file_service import (
 )
 from app.services.llava_service import (
     analyze_image_with_llava,
+    analyze_image_with_llava_fast,
     LLaVAServiceError
 )
 from app.services.text_analysis_service import text_analysis_service, TextAnalysisServiceError
 from app.services.vector_store_service import vector_store_service
+
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -57,11 +63,12 @@ async def upload_file(file: UploadFile = File(...)):
         except Exception:
             enhanced_img_path = img_path
 
-        # Run LLaVA analysis
+        # Run LLaVA analysis with optimized prompt
         llava_result = None
         llava_error = None
         try:
-            llava_result = analyze_image_with_llava(enhanced_img_path)
+            # Use fast LLaVA analysis for better performance
+            llava_result = analyze_image_with_llava_fast(enhanced_img_path)
         except LLaVAServiceError as e:
             llava_error = str(e)
 
@@ -73,7 +80,7 @@ async def upload_file(file: UploadFile = File(...)):
         except Exception as e:
             ocr_error = str(e)
 
-        # Perform text analysis if we have text content
+        # Perform unified text analysis if we have text content
         text_analysis_results = {}
         document_id = None
         
@@ -96,24 +103,46 @@ async def upload_file(file: UploadFile = File(...)):
                     elif any(word in llava_response.lower() for word in ["meeting", "notes"]):
                         document_type = "meeting"
 
-                # Generate summary
-                summary_result = text_analysis_service.summarize_content(ocr_text)
+                logger.info(f"Processing document type: {document_type}")
+                logger.info(f"OCR text length: {len(ocr_text)}")
+
+                # Use unified analysis for better performance
+                unified_analysis = text_analysis_service.analyze_content_unified(ocr_text, document_type)
                 
-                # Extract structured data
-                structured_data = text_analysis_service.extract_structured_data(ocr_text, document_type)
+                logger.info(f"Unified analysis result keys: {list(unified_analysis.keys()) if isinstance(unified_analysis, dict) else 'Not a dict'}")
                 
-                # Generate action items
-                action_items = text_analysis_service.generate_action_items(ocr_text)
-                
+                # Ensure all components are present in the results
                 text_analysis_results = {
-                    "summary": summary_result,
-                    "structured_data": structured_data,
-                    "action_items": action_items,
+                    "summary": unified_analysis.get("summary", {}),
+                    "structured_data": unified_analysis.get("structured_data", {}),
+                    "action_items": unified_analysis.get("action_items", {}),
                     "document_type": document_type,
                     "document_id": document_id,
                     "vector_store_created": vector_store_created
                 }
-            except TextAnalysisServiceError as e:
+                
+                # Validate that we have actual content, not just error messages
+                if (isinstance(text_analysis_results["summary"], dict) and 
+                    "error" in text_analysis_results["summary"]):
+                    logger.warning("Unified analysis failed, trying individual methods")
+                    # If unified analysis failed, try individual methods
+                    try:
+                        summary_result = text_analysis_service.summarize_content(ocr_text)
+                        structured_data = text_analysis_service.extract_structured_data(ocr_text, document_type)
+                        action_items = text_analysis_service.generate_action_items(ocr_text)
+                        
+                        text_analysis_results.update({
+                            "summary": summary_result,
+                            "structured_data": structured_data,
+                            "action_items": action_items
+                        })
+                        logger.info("Individual analysis methods succeeded")
+                    except Exception as e:
+                        logger.error(f"Individual analysis methods failed: {e}")
+                        text_analysis_results["analysis_error"] = f"Text analysis failed: {e}"
+                        
+            except Exception as e:
+                logger.error(f"Text analysis failed: {e}")
                 text_analysis_results = {"error": str(e)}
 
         results.append({

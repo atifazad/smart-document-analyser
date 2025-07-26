@@ -11,34 +11,15 @@ class LLaVAServiceError(Exception):
 
 def analyze_image_with_llava(image_path: str, prompt: str = None, timeout: int = 60) -> Dict[str, Any]:
     if prompt is None:
-        prompt = """Analyze this document comprehensively and provide a structured analysis for downstream processing.
+        # Optimized, focused prompt for faster processing
+        prompt = """Analyze this document and provide:
 
-Please provide:
+1. Document type (invoice, form, report, notes, receipt, letter)
+2. Key text content and important details
+3. Visual elements (tables, charts, diagrams)
+4. Main purpose and context
 
-1. **Document Type**: Identify the type (invoice, form, report, notes, receipt, letter, etc.)
-
-2. **Text Content**: Transcribe all readable text from the document, preserving formatting and structure
-
-3. **Key Information**: Extract important details such as:
-   - Dates, names, numbers, amounts
-   - Contact information, addresses
-   - Reference numbers, IDs
-   - Important facts or data points
-
-4. **Structure & Layout**: Describe the document organization:
-   - Headers, sections, paragraphs
-   - Lists, bullet points, numbered items
-   - Columns, rows, formatting
-
-5. **Visual Elements**: Identify and describe:
-   - Tables, charts, graphs
-   - Diagrams, images, logos
-   - Handwriting style (if applicable)
-   - Any visual components
-
-6. **Context & Purpose**: Explain what this document is for and its main topic
-
-Provide a comprehensive, structured response that captures all the above elements for effective downstream processing."""
+Be concise and structured."""
     
     url = f"{OLLAMA_HOST}/api/generate"
     try:
@@ -63,4 +44,23 @@ Provide a comprehensive, structured response that captures all the above element
         result = response.json()
         return result
     except Exception as e:
-        raise LLaVAServiceError(f"LLaVA/Ollama call failed: {e}") 
+        raise LLaVAServiceError(f"LLaVA/Ollama call failed: {e}")
+
+def analyze_image_with_llava_fast(image_path: str, timeout: int = 30) -> Dict[str, Any]:
+    """Ultra-fast LLaVA analysis with minimal prompt for speed"""
+    prompt = """Document type and key info only. Be brief."""
+    return analyze_image_with_llava(image_path, prompt, timeout)
+
+def analyze_image_with_llava_detailed(image_path: str, timeout: int = 90) -> Dict[str, Any]:
+    """Detailed LLaVA analysis for important documents"""
+    prompt = """Analyze this document comprehensively:
+
+1. Document Type: Identify type (invoice, form, report, notes, receipt, letter)
+2. Text Content: Extract all readable text
+3. Key Information: Dates, names, numbers, amounts, contact info
+4. Visual Elements: Tables, charts, diagrams, handwriting
+5. Structure: Headers, sections, formatting
+6. Purpose: What this document is for
+
+Provide structured analysis."""
+    return analyze_image_with_llava(image_path, prompt, timeout) 

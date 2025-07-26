@@ -4,15 +4,13 @@ from typing import Dict, Any, List, Optional
 from langchain.schema import Document
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
-from langchain_ollama import OllamaEmbeddings
+from .model_manager import model_manager
 
 class VectorStoreService:
     def __init__(self, storage_dir: str = "/tmp/vector_store"):
         self.storage_dir = storage_dir
-        self.embeddings = OllamaEmbeddings(
-            model=os.getenv("TEXT_MODEL", "mistral:7b-instruct"),
-            base_url=os.getenv("OLLAMA_HOST", "http://localhost:11434")
-        )
+        # Use shared embeddings instance from model manager
+        self.embeddings = model_manager.embeddings
         self.text_splitter = RecursiveCharacterTextSplitter(
             chunk_size=1000,
             chunk_overlap=200

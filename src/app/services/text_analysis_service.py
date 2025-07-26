@@ -1,33 +1,106 @@
 import os
 import json
 from typing import Dict, Any, List, Optional
-from langchain_ollama import OllamaLLM, OllamaEmbeddings
 from langchain.prompts import PromptTemplate
 from langchain.schema import Document
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
 from .vector_store_service import vector_store_service
+from .model_manager import model_manager
 
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
-TEXT_MODEL = os.getenv("TEXT_MODEL", "llama3.1:8b")
+TEXT_MODEL = os.getenv("TEXT_MODEL", "mistral:7b-instruct")
 
 class TextAnalysisServiceError(Exception):
     pass
 
 class TextAnalysisService:
     def __init__(self):
-        self.llm = OllamaLLM(
-            model=TEXT_MODEL,
-            base_url=OLLAMA_HOST
-        )
-        self.embeddings = OllamaEmbeddings(
-            model=TEXT_MODEL,
-            base_url=OLLAMA_HOST
-        )
+        # Use shared model instances from model manager
+        self.llm = model_manager.llm
+        self.embeddings = model_manager.embeddings
         self.text_splitter = RecursiveCharacterTextSplitter(
             chunk_size=1000,
             chunk_overlap=200
         )
+    
+    def analyze_content_unified(self, text_content: str, document_type: str = "general") -> Dict[str, Any]:
+        """Unified analysis that combines summary, structured data, and action items in one LLM call"""
+        try:
+            prompt_template = PromptTemplate(
+                input_variables=["text", "document_type"],
+                template="""Analyze this {document_type} document and provide a unified response in JSON format:
+
+{text}
+
+Return a JSON object with this exact structure:
+{{
+    "summary": {{
+        "summary": "brief summary of the document",
+        "original_length": {len(text_content)},
+        "summary_length": "length of summary"
+    }},
+    "structured_data": {{
+        "document_type": "type of document",
+        "key_information": {{
+            "dates": ["important dates"],
+            "names": ["important names"],
+            "amounts": ["important amounts"],
+            "entities": ["important entities"]
+        }},
+        "extracted_data": "relevant structured data based on document type"
+    }},
+    "action_items": {{
+        "action_items": [
+            {{
+                "action": "description of action",
+                "priority": "high/medium/low",
+                "assignee": "who should do this",
+                "due_date": "when this should be done",
+                "category": "work/personal/financial/etc"
+            }}
+        ],
+        "summary": "brief summary of what needs to be done"
+    }}
+}}
+
+JSON:"""
+            )
+            
+            # Use newer LangChain pattern
+            chain = prompt_template | self.llm
+            result = chain.invoke({"text": text_content, "document_type": document_type})
+            
+            try:
+                # Parse the JSON response
+                parsed_result = json.loads(result.strip())
+                return parsed_result
+            except json.JSONDecodeError:
+                # Fallback to individual operations if unified fails
+                return self._fallback_individual_analysis(text_content, document_type)
+        except Exception as e:
+            # If unified analysis fails completely, use fallback
+            return self._fallback_individual_analysis(text_content, document_type)
+    
+    def _fallback_individual_analysis(self, text_content: str, document_type: str) -> Dict[str, Any]:
+        """Fallback to individual analysis methods if unified analysis fails"""
+        try:
+            summary_result = self.summarize_content(text_content)
+            structured_data = self.extract_structured_data(text_content, document_type)
+            action_items = self.generate_action_items(text_content)
+            
+            return {
+                "summary": summary_result,
+                "structured_data": structured_data,
+                "action_items": action_items
+            }
+        except Exception as e:
+            # If even fallback fails, return error structure
+            return {
+                "summary": {"error": f"Summarization failed: {e}"},
+                "structured_data": {"error": f"Structured data extraction failed: {e}"},
+                "action_items": {"error": f"Action item generation failed: {e}"}
+            }
     
     def summarize_content(self, text_content: str) -> Dict[str, Any]:
         """Summarize the extracted text content"""
