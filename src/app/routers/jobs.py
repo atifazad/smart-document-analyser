@@ -32,10 +32,13 @@ async def get_job_status(job_id: str):
         "status": job["status"],
         "progress_percentage": job["progress_percentage"],
         "current_page": job["current_page"],
+        "current_step": job.get("current_step", "unknown"),
+        "step_description": job.get("step_description", ""),
         "errors": job["errors"],
         "duration": job.get("duration"),
         "start_time": job["start_time"],
-        "end_time": job.get("end_time")
+        "end_time": job.get("end_time"),
+        "results": job.get("results", [])
     })
 
 @router.get("/")

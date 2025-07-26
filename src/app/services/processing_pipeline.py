@@ -11,6 +11,7 @@ from app.services.file_service import (
 )
 from app.services.text_analysis_service import text_analysis_service, TextAnalysisServiceError
 from app.services.vector_store_service import vector_store_service
+from app.services.progress_service import progress_tracker
 
 logger = logging.getLogger(__name__)
 
@@ -20,11 +21,11 @@ class ProcessingPipeline:
     def __init__(self):
         self.max_concurrent_pages = int(os.getenv("MAX_CONCURRENT_PROCESSES", "4"))
     
-    async def process_single_page(self, img_path: str, page_index: int) -> Dict[str, Any]:
+    async def process_single_page(self, img_path: str, page_index: int, job_id: str = None, total_substeps: int = 3) -> Dict[str, Any]:
         """Process a single page/image asynchronously (LLaVA analysis removed)"""
         try:
             logger.info(f"Processing page {page_index + 1}: {os.path.basename(img_path)}")
-            
+            substep = 0
             # Enhance image for better OCR processing (run in thread pool)
             try:
                 enhanced_img_path = await asyncio.to_thread(
@@ -42,6 +43,9 @@ class ProcessingPipeline:
                 )
             except Exception as e:
                 ocr_error = str(e)
+            substep += 1
+            if job_id:
+                progress_tracker.update_substep_progress(job_id, page_index, substep, total_substeps)
 
             # Perform unified text analysis if we have text content (run in thread pool)
             text_analysis_results = {}
@@ -99,6 +103,14 @@ class ProcessingPipeline:
                 except Exception as e:
                     logger.error(f"Text analysis failed for page {page_index + 1}: {e}")
                     text_analysis_results = {"error": str(e)}
+            substep += 1
+            if job_id:
+                progress_tracker.update_substep_progress(job_id, page_index, substep, total_substeps)
+
+            # Vector store creation is handled in batch after all pages, but if you want per-page, add here:
+            # substep += 1
+            # if job_id:
+            #     progress_tracker.update_substep_progress(job_id, page_index, substep, total_substeps)
 
             return {
                 "page_index": page_index,
@@ -120,16 +132,17 @@ class ProcessingPipeline:
                 "error": str(e)
             }
     
-    async def process_pages_concurrently(self, image_paths: List[str]) -> List[Dict[str, Any]]:
+    async def process_pages_concurrently(self, image_paths: List[str], job_id: str = None) -> List[Dict[str, Any]]:
         """Process multiple pages concurrently with controlled concurrency"""
         logger.info(f"Processing {len(image_paths)} pages with max concurrency: {self.max_concurrent_pages}")
         
         # Create semaphore to limit concurrent operations
         semaphore = asyncio.Semaphore(self.max_concurrent_pages)
+        total_substeps = 2  # OCR + LLM; add more if needed
         
         async def process_with_semaphore(img_path: str, page_index: int):
             async with semaphore:
-                return await self.process_single_page(img_path, page_index)
+                return await self.process_single_page(img_path, page_index, job_id=job_id, total_substeps=total_substeps)
         
         # Create tasks for all pages
         tasks = [

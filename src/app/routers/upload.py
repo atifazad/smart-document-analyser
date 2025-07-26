@@ -36,12 +36,16 @@ async def process_document_background(job_id: str, image_paths: list, filename: 
     try:
         logger.info(f"Starting background processing for job {job_id}")
         
-        # Process pages concurrently
-        results = await processing_pipeline.process_pages_concurrently(image_paths)
+        # Pass job_id to the pipeline for granular progress
+        results = await processing_pipeline.process_pages_concurrently(image_paths, job_id=job_id)
+        logger.info(f"Pipeline completed, got {len(results)} results for job {job_id}")
         
         # Update progress for each completed page
         for i, result in enumerate(results):
             progress_tracker.update_page_progress(job_id, i, result)
+        
+        # Mark vector store creation step
+        progress_tracker.mark_vector_store_creation(job_id)
         
         # Create batch vector store for entire document
         if len(results) > 1:
@@ -59,6 +63,9 @@ async def process_document_background(job_id: str, image_paths: list, filename: 
                         result.get("ocr_text", "")
                     )
         
+        # Mark finalization step
+        progress_tracker.mark_finalization(job_id)
+        
         # Prepare final response
         final_results = []
         for result in results:
@@ -74,6 +81,8 @@ async def process_document_background(job_id: str, image_paths: list, filename: 
                 "error": result.get("error")
             }
             final_results.append(final_result)
+        
+        logger.info(f"Prepared {len(final_results)} final results for job {job_id}")
         
         # Mark job as completed
         progress_tracker.complete_job(job_id, final_results)
@@ -116,6 +125,8 @@ async def upload_file(background_tasks: BackgroundTasks, file: UploadFile = File
 
     # Create progress tracking job
     job_id = progress_tracker.create_job(len(image_paths), safe_name)
+    # Mark preparation complete and set progress to 5%
+    progress_tracker.mark_preparing_complete(job_id)
     
     # Start background processing
     background_tasks.add_task(
