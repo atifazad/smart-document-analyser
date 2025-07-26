@@ -33,6 +33,10 @@ function App() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [dragActive, setDragActive] = useState(false);
   const progressIntervalRef = useRef<number | null>(null);
+  const [currentPage, setCurrentPage] = useState<number | null>(null);
+  const [totalPages, setTotalPages] = useState<number | null>(null);
+  const [currentStep, setCurrentStep] = useState<string | null>(null);
+  const [stepDescription, setStepDescription] = useState<string>("");
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
@@ -69,39 +73,59 @@ function App() {
     setDragActive(false);
   };
 
-  const startProgressSimulation = () => {
+  const startProgressTracking = (jobId: string) => {
     setProgress(0);
-    let currentProgress = 0;
+    setCurrentPage(null);
+    setTotalPages(null);
+    setCurrentStep(null);
+    setStepDescription("");
     
-    const uploadPhase = setInterval(() => {
-      currentProgress += 2;
-      if (currentProgress <= 30) {
-        setProgress(currentProgress);
-      } else {
-        clearInterval(uploadPhase);
-        
-        const processingPhase = setInterval(() => {
-          currentProgress += 1;
-          if (currentProgress <= 90) {
-            setProgress(currentProgress);
-          } else {
-            clearInterval(processingPhase);
-            
-            const finalizingPhase = setInterval(() => {
-              currentProgress += 0.5;
-              if (currentProgress <= 100) {
-                setProgress(currentProgress);
-              } else {
-                clearInterval(finalizingPhase);
-              }
-            }, 100);
+            const pollProgress = async () => {
+          try {
+            const response = await fetch(`http://localhost:8000/api/jobs/${jobId}`);
+            if (response.ok) {
+              const jobStatus = await response.json();
+              setProgress(jobStatus.progress_percentage || 0);
+              setCurrentPage(jobStatus.current_page || null);
+              setTotalPages(jobStatus.total_pages || null);
+              setCurrentStep(jobStatus.current_step || null);
+              setStepDescription(jobStatus.step_description || "");
+          
+          if (jobStatus.status === 'completed') {
+            setResults(jobStatus.results || []);
+            if (jobStatus.results && jobStatus.results.length > 0) {
+              setSelectedDocument(jobStatus.results[0]);
+              setActiveTab('analysis');
+              setProcessingComplete(true);
+            }
+            setUploading(false);
+            setProgress(100);
+            return true; // Stop polling
+          } else if (jobStatus.status === 'failed') {
+            setError(jobStatus.error || 'Processing failed');
+            setUploading(false);
+            return true; // Stop polling
           }
-        }, 200);
+        }
+      } catch (error) {
+        console.error('Error polling progress:', error);
       }
-    }, 100);
+      return false; // Continue polling
+    };
+    
+    // Poll every 1 second
+    const pollInterval = setInterval(async () => {
+      const shouldStop = await pollProgress();
+      if (shouldStop) {
+        clearInterval(pollInterval);
+      }
+    }, 1000);
+    
+    // Store the interval reference for cleanup
+    progressIntervalRef.current = pollInterval;
   };
 
-  const stopProgressSimulation = () => {
+  const stopProgressTracking = () => {
     if (progressIntervalRef.current) {
       clearInterval(progressIntervalRef.current);
       progressIntervalRef.current = null;
@@ -116,13 +140,13 @@ function App() {
     setQuestions([]);
     setSelectedDocument(null);
     setProcessingComplete(false);
-    
-    startProgressSimulation();
 
     try {
       const formData = new FormData();
       formData.append('file', file);
-      const response = await fetch('http://localhost:8000/api/upload/upload-sync', {
+      
+      // Use async upload endpoint for real progress tracking
+      const response = await fetch('http://localhost:8000/api/upload/upload', {
         method: 'POST',
         body: formData,
       });
@@ -133,19 +157,36 @@ function App() {
       }
       
       const data = await response.json();
-      setProgress(100);
-      setResults(data.results || []);
-      if (data.results && data.results.length > 0) {
-        setSelectedDocument(data.results[0]);
-        // Auto-switch to Analysis Results tab
-        setActiveTab('analysis');
-        setProcessingComplete(true);
+      
+      // Start real progress tracking with the job ID
+      if (data.job_id) {
+        startProgressTracking(data.job_id);
+      } else {
+        // Fallback to sync endpoint if no job_id
+        const syncResponse = await fetch('http://localhost:8000/api/upload/upload-sync', {
+          method: 'POST',
+          body: formData,
+        });
+        
+        if (!syncResponse.ok) {
+          const err = await syncResponse.json();
+          throw new Error(err.detail || 'Upload failed');
+        }
+        
+        const syncData = await syncResponse.json();
+        setProgress(100);
+        setResults(syncData.results || []);
+        if (syncData.results && syncData.results.length > 0) {
+          setSelectedDocument(syncData.results[0]);
+          setActiveTab('analysis');
+          setProcessingComplete(true);
+        }
+        setUploading(false);
       }
     } catch (err: any) {
       setError(err.message || 'Upload failed');
-    } finally {
       setUploading(false);
-      stopProgressSimulation();
+      stopProgressTracking();
     }
   };
 
@@ -525,7 +566,7 @@ function App() {
               {uploading && (
                 <div className="w-full">
                   <div className="flex justify-between text-sm text-gray-600 mb-1">
-                    <span>Processing document...</span>
+                    <span>{stepDescription || "Processing document..."}</span>
                     <span>{Math.round(progress)}%</span>
                   </div>
                   <div className="w-full bg-gray-200 rounded-full h-2.5">
